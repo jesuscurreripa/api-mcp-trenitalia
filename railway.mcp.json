@@ -1,0 +1,11 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "startCommand": "MCP_TRANSPORT=streamable-http MCP_HOST=0.0.0.0 python -m app.mcp_server",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  }
+}

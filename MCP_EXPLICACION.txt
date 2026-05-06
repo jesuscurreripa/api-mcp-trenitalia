@@ -1,0 +1,151 @@
+MCP TRENITALIA PALERMO - EXPLICACION PARA AGENTES AI
+
+Objetivo
+Este MCP expone herramientas para que agentes AI puedan consultar horarios/precios de Trenitalia usando solo las estaciones que definimos:
+- Linea Palermo-Punta Raisi
+- Linea Palermo-Cefalu
+- Catania Centrale
+- Agrigento Centrale
+
+No esta pensado para busquedas arbitrarias en toda Italia. Las herramientas validan los IDs y rechazan estaciones fuera de la lista.
+
+Flujo conversacional obligatorio
+Cuando el usuario diga algo como "buscame un tren", el agente NO debe llamar la busqueda todavia si faltan datos. Primero debe tener:
+1. estacion de origen
+2. estacion de destino
+3. fecha de viaje
+4. horario desde el que quiere buscar
+
+Si falta la hora, preguntar:
+"A partir de que horario quieres la busqueda?"
+
+Si falta fecha, preguntar:
+"Para que fecha quieres viajar?"
+
+Si faltan estaciones, preguntar origen y destino.
+
+Las respuestas de busqueda del MCP estan limpias para el agente: solo incluyen trenes SALEABLE, salida, llegada, duracion, precio, moneda y trenes. No se muestran trenes NOT_SALEABLE al agente.
+
+Servidor MCP
+Archivo:
+app/mcp_server.py
+
+Transporte:
+stdio por defecto. Tambien soporta streamable-http para Railway.
+
+Comando:
+cd "/Users/jesuscurreri/Desktop/api trenitalia"
+.venv/bin/python -m app.mcp_server
+
+Comando Railway MCP remoto:
+MCP_TRANSPORT=streamable-http MCP_HOST=0.0.0.0 python -m app.mcp_server
+
+Endpoint MCP remoto:
+/mcp
+
+Herramientas
+
+1. list_allowed_stations
+Lista todas las estaciones permitidas.
+
+Parametro opcional:
+line:
+- palermo_punta_raisi
+- palermo_cefalu
+- extra
+
+Uso esperado:
+El agente debe llamar esta herramienta cuando no recuerde el ID exacto de una estacion.
+
+2. find_allowed_station
+Busca una estacion por texto o alias dentro de la lista permitida.
+
+Parametros:
+query: texto de busqueda. Ejemplos: aeroporto, cefalu, notarbartolo, punta raisi.
+line: opcional, limita por linea.
+
+Uso esperado:
+Antes de buscar trenes, el agente puede resolver nombres humanos a IDs.
+
+3. search_trenitalia_solutions
+Busca soluciones en vivo en Trenitalia entre dos estaciones permitidas.
+Devuelve solo trenes SALEABLE y una respuesta limpia para contestar al usuario.
+
+Parametros:
+from_station_id: ID permitido de origen.
+to_station_id: ID permitido de destino.
+departure_time: fecha/hora ISO con zona horaria. Ejemplo: 2026-05-06T10:30:00+02:00.
+adults: adultos, por defecto 1.
+children: ninos, por defecto 0.
+regional_only: por defecto true. Conviene true para rutas locales Palermo.
+no_changes: por defecto false. Usar true para trenes directos.
+order: DEPARTURE_DATE, ARRIVAL_DATE, FASTEST o CHEAPEST.
+limit: cantidad de resultados, por defecto 10.
+offset: desplazamiento, por defecto 0.
+include_raw: por defecto false. Si true devuelve tambien la respuesta original completa de Trenitalia.
+
+4. search_trenitalia_day_solutions
+Busca todas las soluciones de un dia desde una hora indicada en adelante. Esta tool pagina internamente con offset y filtra por start_time.
+Devuelve solo trenes SALEABLE y una respuesta limpia para contestar al usuario.
+
+Regla obligatoria para agentes:
+Si el usuario pide trenes "para hoy", "todo el dia" o una busqueda diaria sin dar hora de inicio, pregunta primero:
+"A partir de que horario quieres la busqueda?"
+
+Ejemplo:
+Usuario: desde las 6 de la tarde.
+Tool:
+date = 2026-05-06
+start_time = 18:00
+
+La tool debe responder solo salidas desde las 18:00 en adelante. Para Palermo Centrale -> Palermo Aeroporto, la primera salida esperada con los datos actuales es 18:12.
+
+IDs permitidos
+830012002  Palermo Centrale
+830012134  Palermo Notarbartolo
+830012135  Palermo Vespri
+830012143  Palermo Lolli
+830012065  Palermo De Gasperi
+830012140  Palermo Francia
+830012130  Palermo Palazzo Reale-Orleans
+830012132  Palermo S. Lorenzo
+830012139  Palermo Cardillo-Zen
+830012069  Palermo La Malfa
+830012131  Palermo Tommaso Natale
+830012066  Palermo Sferracavallo
+830012129  Isola Delle Femmine
+830012128  Capaci
+830012126  Cinisi-Terrasini
+830012127  Carini
+830012133  Palermo Aeroporto / Punta Raisi
+830012055  Palermo Brancaccio
+830012032  Palermo Roccella
+830012035  Ficarazzi
+830012008  Bagheria
+830012009  S. Flavia-Solunto-Porticello
+830012010  Casteldaccia
+830012011  Altavilla Milicia
+830012012  S. Nicola (tonnara)
+830012013  Trabia
+830012014  Termini Imerese
+830012017  Campofelice
+830012018  Lascari
+830012019  Cefalu
+830012332  Catania Centrale
+830012216  Agrigento Centrale
+
+Configuracion MCP ejemplo
+Usa este comando en el cliente MCP que corresponda:
+
+{
+  "mcpServers": {
+    "trenitalia-palermo": {
+      "command": "/Users/jesuscurreri/Desktop/api trenitalia/.venv/bin/python",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "/Users/jesuscurreri/Desktop/api trenitalia"
+    }
+  }
+}
+
+Regla para agentes
+Antes de llamar search_trenitalia_solutions, usa list_allowed_stations o find_allowed_station si no tienes absoluta certeza del ID. Nunca inventes IDs. Si el usuario pide una estacion fuera de esta lista, responde que esta MCP esta limitado a las estaciones permitidas.
