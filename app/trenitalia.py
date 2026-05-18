@@ -4,10 +4,22 @@ from datetime import datetime
 from typing import Any, Literal
 
 import httpx
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 
 BASE_URL = "https://www.lefrecce.it/Channels.Website.BFF.WEB/website"
+
+
+class Station(BaseModel):
+    id: int
+    name: str
+    display_name: str = Field(alias="displayName")
+    timezone: str
+    multistation: bool
+    centroid_id: int | None = Field(default=None, alias="centroidId")
+
+    model_config = {"populate_by_name": True}
 
 
 class SearchCriteria(BaseModel):
@@ -27,6 +39,43 @@ class SolutionRequest(BaseModel):
     children: int = Field(default=0, ge=0)
     criteria: SearchCriteria = Field(default_factory=SearchCriteria)
     best_fare: bool = Field(default=False, alias="bestFare")
+
+
+_client: httpx.AsyncClient | None = None
+
+
+def get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(base_url=BASE_URL, timeout=20.0)
+    return _client
+
+
+async def close_client() -> None:
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
+
+async def _request(method: str, path: str, **kwargs: Any) -> Any:
+    client = get_client()
+    try:
+        response = await client.request(method, path, **kwargs)
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Errore di rete verso lefrecce.it: {exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=f"Errore da lefrecce.it: {response.text[:200]}",
+        )
+    return response.json()
+
+
+async def search_locations(name: str, limit: int = 10) -> list[Station]:
+    """Cerca stazioni italiane tramite l'autocompletamento di lefrecce.it."""
+    data = await _request("GET", "/locations/search", params={"name": name, "limit": limit})
+    return [Station.model_validate(item) for item in data]
 
 
 def _solution_payload(request: SolutionRequest) -> dict[str, Any]:
@@ -66,23 +115,24 @@ def summarize_solution(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def search_solutions(request: SolutionRequest) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.post(
-            f"{BASE_URL}/ticket/solutions",
-            json=_solution_payload(request),
-            headers={"Content-Type": "application/json"},
-        )
-        response.raise_for_status()
-        data = response.json()
-
-    return {
+async def search_solutions(
+    request: SolutionRequest, *, include_raw: bool = False
+) -> dict[str, Any]:
+    data = await _request(
+        "POST",
+        "/ticket/solutions",
+        json=_solution_payload(request),
+        headers={"Content-Type": "application/json"},
+    )
+    result = {
         "searchId": data.get("searchId"),
         "cartId": data.get("cartId"),
         "count": len(data.get("solutions") or []),
         "solutions": [summarize_solution(item) for item in data.get("solutions") or []],
-        "raw": data,
     }
+    if include_raw:
+        result["raw"] = data
+    return result
 
 
 def _parse_trenitalia_datetime(value: str) -> datetime:
@@ -96,7 +146,7 @@ async def search_day_solutions(
     max_pages: int = 12,
     include_raw: bool = False,
 ) -> dict[str, Any]:
-    """Page Trenitalia results and keep only departures from request time to end of day."""
+    """Pagina i risultati di lefrecce e tiene solo le partenze del giorno richiesto, dall'ora indicata in poi."""
     start = request.departure_time
     target_date = start.date()
     offset = 0
@@ -108,7 +158,7 @@ async def search_day_solutions(
     for _ in range(max_pages):
         criteria = request.criteria.model_copy(update={"limit": page_size, "offset": offset})
         page_request = request.model_copy(update={"criteria": criteria})
-        page = await search_solutions(page_request)
+        page = await search_solutions(page_request, include_raw=include_raw)
         page_count += 1
         page_solutions = page.get("solutions") or []
         if include_raw:

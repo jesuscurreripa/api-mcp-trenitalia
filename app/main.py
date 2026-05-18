@@ -1,17 +1,39 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from app.stations import LineName, STATIONS, Station, find_stations, get_station_by_id
-from app.trenitalia import SearchCriteria, SolutionRequest, search_day_solutions, search_solutions
+from app.trenitalia import (
+    SearchCriteria,
+    SolutionRequest,
+    Station,
+    close_client,
+    search_day_solutions,
+    search_locations,
+    search_solutions,
+)
 
 
-app = FastAPI(title="API Trenitalia Palermo", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    await close_client()
+
+
+app = FastAPI(
+    title="API-MCP Trenitalia",
+    description=(
+        "API REST per la ricerca di treni, disponibilità e prezzi sulla rete ferroviaria italiana. "
+        "Proxy verso lefrecce.it. Solo lettura: nessuna prenotazione, nessun acquisto."
+    ),
+    version="0.2.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,6 +52,7 @@ class StationRouteRequest(BaseModel):
     children: int = 0
     criteria: SearchCriteria = Field(default_factory=SearchCriteria)
     best_fare: bool = Field(default=False, alias="bestFare")
+    include_raw: bool = Field(default=False, alias="includeRaw")
 
 
 class DaySolutionsRequest(BaseModel):
@@ -39,7 +62,8 @@ class DaySolutionsRequest(BaseModel):
     start_time: time = Field(default=time(0, 0), alias="startTime")
     adults: int = 1
     children: int = 0
-    regional_only: bool = Field(default=True, alias="regionalOnly")
+    regional_only: bool = Field(default=False, alias="regionalOnly")
+    frecce_only: bool = Field(default=False, alias="frecceOnly")
     no_changes: bool = Field(default=False, alias="noChanges")
     order: str = "DEPARTURE_DATE"
     page_size: int = Field(default=10, ge=1, le=10, alias="pageSize")
@@ -52,37 +76,16 @@ def health() -> dict[str, str]:
 
 
 @app.get("/stations", response_model=list[Station])
-def stations(
-    q: str | None = Query(default=None, description="Search by station name or alias"),
-    line: LineName | None = Query(default=None),
+async def stations(
+    q: str = Query(..., min_length=2, description="Nome (parziale) della stazione, es. 'roma', 'milano centrale'"),
+    limit: int = Query(default=10, ge=1, le=50),
 ) -> list[Station]:
-    return find_stations(q, line)
-
-
-@app.get("/stations/{station_id}", response_model=Station)
-def station(station_id: int) -> Station:
-    result = get_station_by_id(station_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Station not found")
-    return result
-
-
-@app.get("/lines")
-def lines() -> dict[str, list[Station]]:
-    return {
-        "palermo_punta_raisi": [station for station in STATIONS if station.line == "palermo_punta_raisi"],
-        "palermo_cefalu": [station for station in STATIONS if station.line == "palermo_cefalu"],
-        "extra": [station for station in STATIONS if station.line == "extra"],
-    }
+    """Cerca stazioni italiane via lefrecce.it (autocompletamento)."""
+    return await search_locations(q, limit=limit)
 
 
 @app.post("/solutions")
 async def solutions(request: StationRouteRequest) -> dict:
-    if not get_station_by_id(request.from_station_id):
-        raise HTTPException(status_code=400, detail="fromStationId is not in the curated station list")
-    if not get_station_by_id(request.to_station_id):
-        raise HTTPException(status_code=400, detail="toStationId is not in the curated station list")
-
     trenitalia_request = SolutionRequest(
         departureLocationId=request.from_station_id,
         arrivalLocationId=request.to_station_id,
@@ -92,25 +95,18 @@ async def solutions(request: StationRouteRequest) -> dict:
         criteria=request.criteria,
         bestFare=request.best_fare,
     )
-    return await search_solutions(trenitalia_request)
+    return await search_solutions(trenitalia_request, include_raw=request.include_raw)
 
 
 @app.post("/day-solutions")
 async def day_solutions(request: DaySolutionsRequest) -> dict:
-    from_station = get_station_by_id(request.from_station_id)
-    to_station = get_station_by_id(request.to_station_id)
-    if not from_station:
-        raise HTTPException(status_code=400, detail="fromStationId is not in the curated station list")
-    if not to_station:
-        raise HTTPException(status_code=400, detail="toStationId is not in the curated station list")
-
     departure_time = datetime.combine(
         request.date_,
         request.start_time,
         tzinfo=ZoneInfo("Europe/Rome"),
     )
     criteria = SearchCriteria(
-        frecceOnly=False,
+        frecceOnly=request.frecce_only,
         regionalOnly=request.regional_only,
         noChanges=request.no_changes,
         order=request.order,
@@ -126,11 +122,8 @@ async def day_solutions(request: DaySolutionsRequest) -> dict:
         criteria=criteria,
         bestFare=False,
     )
-    result = await search_day_solutions(
+    return await search_day_solutions(
         trenitalia_request,
         page_size=request.page_size,
         max_pages=request.max_pages,
     )
-    result["fromStation"] = from_station.model_dump()
-    result["toStation"] = to_station.model_dump()
-    return result

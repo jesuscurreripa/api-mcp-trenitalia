@@ -3,44 +3,38 @@ from __future__ import annotations
 import os
 from datetime import date as Date
 from datetime import datetime, time
-from zoneinfo import ZoneInfo
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from mcp.server.fastmcp import FastMCP
 
-from app.stations import STATIONS, LineName, find_stations, get_station_by_id
-from app.trenitalia import SearchCriteria, SolutionRequest, search_day_solutions, search_solutions
-
-
-ALLOWED_STATION_IDS = sorted({station.id for station in STATIONS})
-ALLOWED_STATIONS_TEXT = "\n".join(
-    f"- {station.id}: {station.name} ({station.line})" for station in STATIONS
+from app.trenitalia import (
+    SearchCriteria,
+    SolutionRequest,
+    search_day_solutions,
+    search_locations,
+    search_solutions,
 )
 
+
 mcp = FastMCP(
-    "trenitalia-palermo",
+    "api-mcp-trenitalia",
     host=os.getenv("MCP_HOST", "127.0.0.1"),
     port=int(os.getenv("PORT", os.getenv("MCP_PORT", "8000"))),
     instructions=(
-        "Use this MCP only for the curated Trenitalia stations agreed with the user. "
-        "Do not search arbitrary Italian stations. Allowed station IDs are:\n"
-        f"{ALLOWED_STATIONS_TEXT}\n"
-        "Conversation workflow: when the user asks for a train search, collect origin station, "
-        "destination station, travel date, and the time they want to search from. If any of these "
-        "are missing, ask for the missing field before calling a search tool. For local Palermo "
-        "routes, prefer regional_only=true. Search tools return only SALEABLE trains and clean "
-        "agent-facing fields."
+        "MCP per la ricerca di treni, disponibilita' e prezzi sulla rete "
+        "ferroviaria italiana (Trenitalia / lefrecce.it).\n\n"
+        "SCOPE: SOLO LETTURA. Questo server non effettua prenotazioni, non acquista "
+        "biglietti, non gestisce carrelli o pagamenti. Se l'utente vuole comprare un "
+        "biglietto, indirizzalo a lefrecce.it o all'app Trenitalia.\n\n"
+        "Flusso conversazionale obbligatorio: prima di chiamare una ricerca di treni, "
+        "raccogli sempre dall'utente: stazione di partenza, stazione di arrivo, data, "
+        "e ora a partire dalla quale cercare. Se manca uno di questi dati, chiedilo "
+        "prima di chiamare il tool.\n\n"
+        "Per ottenere gli ID delle stazioni usa search_stations (es. 'roma', 'milano centrale'). "
+        "Le ricerche restituiscono solo treni SALEABLE (acquistabili al momento) con campi essenziali."
     ),
 )
-
-
-def _station_to_dict(station) -> dict[str, Any]:
-    return {
-        "id": station.id,
-        "name": station.name,
-        "line": station.line,
-        "aliases": station.aliases,
-    }
 
 
 def _clean_solution(solution: dict[str, Any]) -> dict[str, Any]:
@@ -61,8 +55,8 @@ def _clean_solution(solution: dict[str, Any]) -> dict[str, Any]:
 def _clean_saleable_response(
     *,
     result: dict[str, Any],
-    from_station: Any,
-    to_station: Any,
+    from_station_id: int,
+    to_station_id: int,
     requested_from: str,
 ) -> dict[str, Any]:
     clean_solutions = [
@@ -71,13 +65,13 @@ def _clean_saleable_response(
         if solution.get("status") == "SALEABLE"
     ]
     return {
-        "fromStation": {"id": from_station.id, "name": from_station.name},
-        "toStation": {"id": to_station.id, "name": to_station.name},
+        "fromStationId": from_station_id,
+        "toStationId": to_station_id,
         "requestedFrom": requested_from,
         "count": len(clean_solutions),
         "solutions": clean_solutions,
         "message": (
-            "No hay trenes disponibles para comprar desde ese horario."
+            "Nessun treno acquistabile trovato per quell'orario."
             if not clean_solutions
             else None
         ),
@@ -85,31 +79,17 @@ def _clean_saleable_response(
 
 
 @mcp.tool()
-def list_allowed_stations(line: LineName | None = None) -> dict[str, Any]:
-    """List the only Trenitalia station IDs this MCP is allowed to use.
+async def search_stations(query: str, limit: int = 10) -> dict[str, Any]:
+    """Cerca stazioni italiane per nome (autocompletamento lefrecce.it).
 
-    Allowed lines:
-    - palermo_punta_raisi
-    - palermo_cefalu
-    - extra
+    Esempi: 'roma', 'milano centrale', 'palermo aeroporto', 'venezia santa lucia'.
+    Restituisce gli ID stazione da usare in search_trenitalia_solutions.
     """
-    stations = [station for station in STATIONS if line is None or station.line == line]
-    return {
-        "allowedStationIds": sorted({station.id for station in stations}),
-        "stations": [_station_to_dict(station) for station in stations],
-    }
-
-
-@mcp.tool()
-def find_allowed_station(query: str, line: LineName | None = None) -> dict[str, Any]:
-    """Find station IDs by name or alias, limited to the curated station list."""
-    matches = find_stations(query=query, line=line)
+    stations = await search_locations(query, limit=limit)
     return {
         "query": query,
-        "line": line,
-        "count": len(matches),
-        "matches": [_station_to_dict(station) for station in matches],
-        "allowedStationIds": ALLOWED_STATION_IDS,
+        "count": len(stations),
+        "stations": [s.model_dump(by_alias=True) for s in stations],
     }
 
 
@@ -120,68 +100,25 @@ async def search_trenitalia_solutions(
     departure_time: str,
     adults: int = 1,
     children: int = 0,
-    regional_only: bool = True,
+    regional_only: bool = False,
+    frecce_only: bool = False,
     no_changes: bool = False,
     order: Literal["DEPARTURE_DATE", "ARRIVAL_DATE", "FASTEST", "CHEAPEST"] = "DEPARTURE_DATE",
     limit: int = 10,
     offset: int = 0,
-    include_raw: bool = False,
 ) -> dict[str, Any]:
-    """Search live Trenitalia solutions between allowed station IDs only.
+    """Cerca soluzioni di viaggio Trenitalia tra due stazioni.
 
-    Conversation rule: before using this tool, make sure the user provided origin,
-    destination, date, and desired start time. This tool returns only SALEABLE trains
-    with clean fields for agent replies.
+    Parametri:
+    - from_station_id, to_station_id: ottenuti da search_stations.
+    - departure_time: ISO 8601 con timezone, es. '2026-05-20T08:30:00+02:00'.
+    - regional_only=True per cercare solo treni regionali.
+    - frecce_only=True per cercare solo Frecce.
 
-    Use only these IDs:
-    830012002 Palermo Centrale
-    830012134 Palermo Notarbartolo
-    830012135 Palermo Vespri
-    830012143 Palermo Lolli
-    830012065 Palermo De Gasperi
-    830012140 Palermo Francia
-    830012130 Palermo Palazzo Reale-Orleans
-    830012132 Palermo S. Lorenzo
-    830012139 Palermo Cardillo-Zen
-    830012069 Palermo La Malfa
-    830012131 Palermo Tommaso Natale
-    830012066 Palermo Sferracavallo
-    830012129 Isola Delle Femmine
-    830012128 Capaci
-    830012126 Cinisi-Terrasini
-    830012127 Carini
-    830012133 Palermo Aeroporto / Punta Raisi
-    830012055 Palermo Brancaccio
-    830012032 Palermo Roccella
-    830012035 Ficarazzi
-    830012008 Bagheria
-    830012009 S. Flavia-Solunto-Porticello
-    830012010 Casteldaccia
-    830012011 Altavilla Milicia
-    830012012 S. Nicola (tonnara)
-    830012013 Trabia
-    830012014 Termini Imerese
-    830012017 Campofelice
-    830012018 Lascari
-    830012019 Cefalu
-    830012332 Catania Centrale
-    830012216 Agrigento Centrale
+    Restituisce solo treni SALEABLE (acquistabili).
     """
-    from_station = get_station_by_id(from_station_id)
-    to_station = get_station_by_id(to_station_id)
-    if from_station is None:
-        return {
-            "error": "from_station_id is not allowed",
-            "allowedStationIds": ALLOWED_STATION_IDS,
-        }
-    if to_station is None:
-        return {
-            "error": "to_station_id is not allowed",
-            "allowedStationIds": ALLOWED_STATION_IDS,
-        }
-
     criteria = SearchCriteria(
-        frecceOnly=False,
+        frecceOnly=frecce_only,
         regionalOnly=regional_only,
         noChanges=no_changes,
         order=order,
@@ -198,15 +135,12 @@ async def search_trenitalia_solutions(
         bestFare=False,
     )
     result = await search_solutions(request)
-    clean_result = _clean_saleable_response(
+    return _clean_saleable_response(
         result=result,
-        from_station=from_station,
-        to_station=to_station,
+        from_station_id=from_station_id,
+        to_station_id=to_station_id,
         requested_from=departure_time,
     )
-    if include_raw:
-        clean_result["raw"] = result.get("raw")
-    return clean_result
 
 
 @mcp.tool()
@@ -217,37 +151,26 @@ async def search_trenitalia_day_solutions(
     start_time: str,
     adults: int = 1,
     children: int = 0,
-    regional_only: bool = True,
+    regional_only: bool = False,
+    frecce_only: bool = False,
     no_changes: bool = False,
     page_size: int = 10,
     max_pages: int = 12,
 ) -> dict[str, Any]:
-    """Return all same-day solutions from a user-selected start time onward.
+    """Restituisce tutte le soluzioni del giorno a partire dall'ora indicata.
 
-    Conversation rule: before using this tool, make sure the user provided origin,
-    destination, date, and desired start time. If the user did not say a start time,
-    ask "A partir de que horario quieres la busqueda?" before calling this tool.
-    Examples: start_time="18:00" returns only available departures at or after 18:00,
-    such as 18:12 onward.
+    Parametri:
+    - date: 'YYYY-MM-DD'.
+    - start_time: 'HH:MM', es. '18:00' restituisce tutte le partenze dalle 18:00 in poi.
+
+    Se l'utente non ha indicato un orario di partenza, chiedi:
+    'A che ora vuoi iniziare la ricerca?' prima di chiamare questo tool.
     """
-    from_station = get_station_by_id(from_station_id)
-    to_station = get_station_by_id(to_station_id)
-    if from_station is None:
-        return {
-            "error": "from_station_id is not allowed",
-            "allowedStationIds": ALLOWED_STATION_IDS,
-        }
-    if to_station is None:
-        return {
-            "error": "to_station_id is not allowed",
-            "allowedStationIds": ALLOWED_STATION_IDS,
-        }
-
     parsed_date = Date.fromisoformat(date)
     parsed_time = time.fromisoformat(start_time)
     departure_time = datetime.combine(parsed_date, parsed_time, tzinfo=ZoneInfo("Europe/Rome"))
     criteria = SearchCriteria(
-        frecceOnly=False,
+        frecceOnly=frecce_only,
         regionalOnly=regional_only,
         noChanges=no_changes,
         order="DEPARTURE_DATE",
@@ -266,8 +189,8 @@ async def search_trenitalia_day_solutions(
     result = await search_day_solutions(request, page_size=page_size, max_pages=max_pages)
     return _clean_saleable_response(
         result=result,
-        from_station=from_station,
-        to_station=to_station,
+        from_station_id=from_station_id,
+        to_station_id=to_station_id,
         requested_from=departure_time.isoformat(),
     )
 
@@ -275,5 +198,5 @@ async def search_trenitalia_day_solutions(
 if __name__ == "__main__":
     transport = os.getenv("MCP_TRANSPORT", "stdio")
     if transport not in {"stdio", "sse", "streamable-http"}:
-        raise ValueError("MCP_TRANSPORT must be stdio, sse, or streamable-http")
+        raise ValueError("MCP_TRANSPORT deve essere stdio, sse o streamable-http")
     mcp.run(transport=transport)
