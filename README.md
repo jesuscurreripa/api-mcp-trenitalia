@@ -158,7 +158,7 @@ Per il deploy:
 
 ```bash
 git clone <questo-repo>
-cd API-MCP-Trenitalia
+cd api-mcp-trenitalia
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -186,7 +186,7 @@ Configurazione di esempio per Claude Desktop o altri client MCP:
     "api-mcp-trenitalia": {
       "command": "/path/to/.venv/bin/python",
       "args": ["-m", "app.mcp_server"],
-      "cwd": "/path/to/API-MCP-Trenitalia"
+      "cwd": "/path/to/api-mcp-trenitalia"
     }
   }
 }
@@ -688,7 +688,7 @@ Distribuito sotto licenza **[GNU Affero General Public License v3.0 — only](LI
 
 ### ⚠️ Stai forkando? Leggi prima questa sezione
 
-AGPL-3.0 è una **strong copyleft network license**. La clausola §13 ("Remote Network Interaction") impone obblighi che molti sviluppatori sottovalutano. Se intendi forkare `API-MCP-Trenitalia` e usarlo in un servizio di rete (es. un'app, una dashboard, un'API B2B, un agente AI che esponi a utenti finali), sei tenuto a:
+AGPL-3.0 è una **strong copyleft network license**. La clausola §13 ("Remote Network Interaction") impone obblighi che molti sviluppatori sottovalutano. Se intendi forkare `api-mcp-trenitalia` e usarlo in un servizio di rete (es. un'app, una dashboard, un'API B2B, un agente AI che esponi a utenti finali), sei tenuto a:
 
 1. **Mantenere AGPL-3.0** in tutte le distribuzioni del fork. Non puoi rilicenziare ad Apache, MIT, BSD, GPL-2, GPL-3 o altre licenze.
 2. **Preservare** il file `LICENSE`, gli header SPDX e i credit all'autore originale in ogni copia distribuita o ridistribuita.
