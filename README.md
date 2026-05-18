@@ -9,9 +9,12 @@
 
 Servizio REST e server **MCP (Model Context Protocol)** per la **ricerca di treni, disponibilità e prezzi** sulla rete ferroviaria italiana. Fa da proxy verso il backend pubblico di [lefrecce.it](https://www.lefrecce.it/), esponendo endpoint puliti via [FastAPI](https://fastapi.tiangolo.com/) per applicazioni web/mobile e tool conversazionali via MCP per agenti AI (Claude, ecc.).
 
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?template=https%3A%2F%2Fgithub.com%2Fjesuscurreripa%2Fapi-mcp-trenitalia)
+
 > [!IMPORTANT]
 > **Scope: solo lettura.** Questo servizio è esclusivamente per **ricerca, disponibilità e prezzi**. **Non** effettua prenotazioni, **non** acquista biglietti, **non** gestisce carrelli, pagamenti, profili utente o e-ticket. Per acquistare un biglietto l'utente deve andare su [lefrecce.it](https://www.lefrecce.it/) o sull'app Trenitalia.
 
+> [!CAUTION]
 > **Disclaimer legale** — Questo progetto è uno strumento indipendente e **non** è affiliato, approvato o supportato da Trenitalia S.p.A., Ferrovie dello Stato Italiane, Italo o lefrecce.it. L'utente è l'unico responsabile del rispetto dei termini di servizio del portale lefrecce.it e della normativa vigente. L'uso programmatico del backend potrebbe violare i termini d'uso del servizio. Usalo a tuo rischio e per scopi leciti.
 
 > [!NOTE]
